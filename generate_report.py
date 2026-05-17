@@ -8,14 +8,18 @@ from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.oxml.ns import qn
 
 
+def _set_font(run, name='宋体', size=12):
+    run.font.size = Pt(size)
+    run.font.name = name
+    run._element.rPr.rFonts.set(qn('w:eastAsia'), name)
+
+
 def set_cell(cell, text, bold=False, size=10, align=WD_ALIGN_PARAGRAPH.CENTER):
     cell.text = ""
     p = cell.paragraphs[0]
     p.alignment = align
     run = p.add_run(text)
-    run.font.size = Pt(size)
-    run.font.name = '宋体'
-    run._element.rPr.rFonts.set(qn('w:eastAsia'), '宋体')
+    _set_font(run, size=size)
     run.bold = bold
 
 
@@ -27,9 +31,7 @@ def add_para(doc, text, bold=False, size=12, indent=True, align=None, space_afte
     if align:
         p.alignment = align
     run = p.add_run(text)
-    run.font.size = Pt(size)
-    run.font.name = '宋体'
-    run._element.rPr.rFonts.set(qn('w:eastAsia'), '宋体')
+    _set_font(run, size=size)
     run.bold = bold
     return p
 
@@ -37,17 +39,14 @@ def add_para(doc, text, bold=False, size=12, indent=True, align=None, space_afte
 def add_bullet(doc, text, size=12):
     p = doc.add_paragraph(style='List Bullet')
     run = p.add_run(text)
-    run.font.size = Pt(size)
-    run.font.name = '宋体'
-    run._element.rPr.rFonts.set(qn('w:eastAsia'), '宋体')
+    _set_font(run, size=size)
     return p
 
 
 def add_heading(doc, text, level=1):
     h = doc.add_heading(text, level=level)
     for run in h.runs:
-        run.font.name = '黑体'
-        run._element.rPr.rFonts.set(qn('w:eastAsia'), '黑体')
+        _set_font(run, name='黑体')
     return h
 
 
@@ -69,9 +68,7 @@ def create_report():
     title = doc.add_paragraph()
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
     run = title.add_run('实验报告书')
-    run.font.size = Pt(18)
-    run.font.name = '黑体'
-    run._element.rPr.rFonts.set(qn('w:eastAsia'), '黑体')
+    _set_font(run, name='黑体', size=18)
     run.bold = True
     doc.add_paragraph()
 

@@ -17,26 +17,39 @@ def rows_to_list(rows):
     return [dict(r) for r in rows]
 
 
-def gen_apply_no():
+def gen_apply_no(db=None):
     today = date.today().strftime('%Y%m%d')
-    db = get_db()
+    own_db = db is None
+    if own_db:
+        db = get_db()
     count = db.execute(
         "SELECT COUNT(*) FROM application WHERE apply_no LIKE ?",
         (f'AP-{today}-%',)
     ).fetchone()[0]
-    db.close()
+    if own_db:
+        db.close()
     return f'AP-{today}-{count + 1:03d}'
 
 
-def gen_payment_no():
+def gen_payment_no(db=None):
     today = date.today().strftime('%Y%m%d')
-    db = get_db()
+    own_db = db is None
+    if own_db:
+        db = get_db()
     count = db.execute(
         "SELECT COUNT(*) FROM payment WHERE payment_no LIKE ?",
         (f'PAY-{today}-%',)
     ).fetchone()[0]
-    db.close()
+    if own_db:
+        db.close()
     return f'PAY-{today}-{count + 1:03d}'
+
+
+def get_paid_amount(db, apply_no):
+    return db.execute(
+        "SELECT COALESCE(SUM(amount),0) as total FROM payment WHERE apply_no=? AND pay_type IN ('订金','余款')",
+        (apply_no,)
+    ).fetchone()['total']
 
 
 def calc_deposit(departure_date, adult, child):
@@ -405,7 +418,7 @@ def create_application():
     departure = date.fromisoformat(group['departure_date'])
     deposit_info = calc_deposit(departure, data['adult_count'], data['child_count'])
 
-    apply_no = gen_apply_no()
+    apply_no = gen_apply_no(db)
     try:
         db.execute(
             '''INSERT INTO application
@@ -431,7 +444,7 @@ def create_application():
             (data['adult_count'] + data['child_count'], data['group_code'])
         )
         # 记录订金支付
-        pay_no = gen_payment_no()
+        pay_no = gen_payment_no(db)
         db.execute(
             "INSERT INTO payment (payment_no, apply_no, amount, pay_type, pay_method) VALUES (?,?,?,?,?)",
             (pay_no, apply_no, deposit_info['total'], '订金', data.get('pay_method', '现金'))
@@ -464,10 +477,7 @@ def cancel_application(apply_no):
     departure = date.fromisoformat(group['departure_date'])
 
     # 计算已付金额
-    paid = db.execute(
-        "SELECT COALESCE(SUM(amount),0) as total FROM payment WHERE apply_no=? AND pay_type IN ('订金','余款')",
-        (apply_no,)
-    ).fetchone()['total']
+    paid = get_paid_amount(db, apply_no)
 
     fee_info = calc_cancel_fee(departure, paid)
 
@@ -482,7 +492,7 @@ def cancel_application(apply_no):
         )
         # 记录退款
         if fee_info['refund'] > 0:
-            refund_no = gen_payment_no()
+            refund_no = gen_payment_no(db)
             db.execute(
                 "INSERT INTO payment (payment_no, apply_no, amount, pay_type, pay_method) VALUES (?,?,?,?,?)",
                 (refund_no, apply_no, -fee_info['refund'], '退款', '银行转账')
@@ -623,10 +633,7 @@ def pay_balance(apply_no):
         db.close()
         return jsonify({'error': '申请不存在'}), 404
 
-    paid = db.execute(
-        "SELECT COALESCE(SUM(amount),0) as total FROM payment WHERE apply_no=? AND pay_type IN ('订金','余款')",
-        (apply_no,)
-    ).fetchone()['total']
+    paid = get_paid_amount(db, apply_no)
 
     remaining = app_row['total_fee'] - paid
     amount = data.get('amount', remaining)
@@ -636,7 +643,7 @@ def pay_balance(apply_no):
         return jsonify({'error': f'支付金额超出待付余额 ¥{remaining}'}), 400
 
     try:
-        pay_no = gen_payment_no()
+        pay_no = gen_payment_no(db)
         db.execute(
             "INSERT INTO payment (payment_no, apply_no, amount, pay_type, pay_method) VALUES (?,?,?,?,?)",
             (pay_no, apply_no, amount, '余款', data.get('pay_method', '现金'))
