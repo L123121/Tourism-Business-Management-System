@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"D:\\\\旅游业务管理系统原型\" -Recurse)",
+      "Bash(Select-Object FullName, Length, PSIsContainer)",
+      "Bash(Format-Table -AutoSize)",
+      "Bash(file *.pdf)",
+      "Bash(file *.doc)",
+      "Bash(python *)",
+      "Bash(ls -la \"D:\\\\\\\\旅游业务管理系统原型\\\\\\\\\")",
+      "Bash(pip install *)",
+      "Skill(pdf)",
+      "Bash(dir *.pdf)",
+      "Bash(Remove-Item *)"
+    ]
+  }
+}

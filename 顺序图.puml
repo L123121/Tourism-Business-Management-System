@@ -1,0 +1,51 @@
+@startuml
+
+actor "前台员工" as Staff
+participant "系统界面" as UI
+participant "申请管理" as AppMod
+participant "旅游团查询" as QueryMod
+participant "订金计算" as DepMod
+participant "支付记录" as PayMod
+database "数据库" as DB
+
+== 查询旅游团 ==
+Staff -> UI : 输入顾客需求
+UI -> QueryMod : 查询可用旅游团
+QueryMod -> DB : 查询旅游团信息
+DB --> QueryMod : 返回旅游团列表
+QueryMod --> UI : 显示旅游团信息
+UI --> Staff : 展示可选旅游团
+
+== 验证申请条件 ==
+Staff -> UI : 选择旅游团
+UI -> AppMod : 验证申请条件
+AppMod -> DB : 查询截止日期和人数
+DB --> AppMod : 返回旅游团状态
+AppMod --> UI : 返回验证结果
+UI --> Staff : 显示验证结果
+
+== 录入申请信息 ==
+Staff -> UI : 录入责任人信息和人数
+UI -> AppMod : 创建申请记录
+AppMod -> DB : 保存申请信息
+DB --> AppMod : 保存成功
+
+== 计算并收取订金 ==
+AppMod -> DepMod : 计算订金
+DepMod -> DB : 查询价格和出发日期
+DB --> DepMod : 返回价格信息
+DepMod --> AppMod : 返回订金金额
+AppMod --> UI : 显示订金金额
+UI --> Staff : 告知顾客订金
+
+Staff -> UI : 记录订金支付
+UI -> PayMod : 创建支付记录
+PayMod -> DB : 保存支付信息
+DB --> PayMod : 保存成功
+PayMod --> UI : 生成收据
+
+== 提供收据和申请书 ==
+UI --> Staff : 显示收据和申请书
+Staff -> Staff : 打印交给顾客
+
+@enduml

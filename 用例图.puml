@@ -1,0 +1,59 @@
+@startuml 旅游业务管理系统用例图
+left to right direction
+skinparam actorStyle awesome
+skinparam packageStyle rectangle
+
+actor "前台员工" as Receptionist
+actor "路线管理员" as RouteManager
+actor "催款员工" as CollectionClerk
+actor "会计人员" as Accountant
+actor "顾客" as Customer
+
+rectangle "旅游业务管理系统" {
+    usecase "办理旅游申请" as UC1
+    usecase "查询旅游团信息" as UC2
+    usecase "计算订金" as UC3
+    usecase "记录订金支付" as UC4
+    usecase "录入参加者信息" as UC5
+    usecase "处理余款支付" as UC6
+    usecase "变更参加者信息" as UC7
+    usecase "取消参加者" as UC8
+    usecase "取消申请" as UC9
+    usecase "打印确认书" as UC10
+    usecase "打印余额交款单" as UC11
+    usecase "设计旅游路线" as UC12
+    usecase "设定旅游活动" as UC13
+    usecase "调整价格" as UC14
+    usecase "导出财务数据" as UC15
+    usecase "指定新申请责任人" as UC16
+}
+
+Receptionist --> UC1
+Receptionist --> UC2
+Receptionist --> UC4
+Receptionist --> UC5
+Receptionist --> UC6
+Receptionist --> UC7
+Receptionist --> UC8
+Receptionist --> UC9
+
+Customer --> UC1 : <<include>>
+
+UC1 ..> UC2 : <<include>>
+UC1 ..> UC3 : <<include>>
+UC1 ..> UC4 : <<include>>
+
+UC7 ..> UC16 : <<extend>>
+UC8 ..> UC16 : <<extend>>
+
+CollectionClerk --> UC10
+CollectionClerk --> UC11
+
+RouteManager --> UC12
+RouteManager --> UC13
+RouteManager --> UC14
+
+Accountant --> UC15
+UC15 ..> UC4 : <<include>>
+
+@enduml
