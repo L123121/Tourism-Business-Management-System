@@ -1,0 +1,1 @@
+import{n as e}from"./index-COzsr9NZ.js";var t=t=>e.get(`/api/groups`,{params:t}),n=t=>e.get(`/api/groups/${t}`),r=t=>e.post(`/api/groups`,t);export{n,t as r,r as t};

@@ -1,6 +1,7 @@
 import sqlite3
 import os
 from contextlib import contextmanager
+from werkzeug.security import generate_password_hash
 
 DB_PATH = os.path.join(os.path.dirname(__file__), 'travel.db')
 
@@ -60,6 +61,7 @@ def init_db():
         activity_code TEXT NOT NULL,
         departure_date TEXT NOT NULL,
         deadline TEXT NOT NULL,
+        balance_deadline TEXT,
         capacity INTEGER NOT NULL,
         current_count INTEGER DEFAULT 0,
         status TEXT DEFAULT '未开放' CHECK(status IN ('未开放','已开放','已截止','已完成')),
@@ -114,6 +116,16 @@ def init_db():
         exported INTEGER DEFAULT 0,
         FOREIGN KEY (apply_no) REFERENCES application(apply_no)
     );
+
+    CREATE TABLE IF NOT EXISTS user (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        real_name TEXT NOT NULL,
+        role TEXT NOT NULL CHECK(role IN ('receptionist','collector','routeAdmin','accountant','admin')),
+        is_active INTEGER DEFAULT 1,
+        created_date TEXT DEFAULT (date('now'))
+    );
     ''')
 
     conn.commit()
@@ -124,7 +136,24 @@ def seed_data():
     conn = get_db()
     cur = conn.cursor()
 
-    # 检查是否已有数据
+    # 确保系统用户存在（即使业务数据已存在也要补建用户）
+    user_count = cur.execute("SELECT COUNT(*) FROM user").fetchone()[0]
+    if user_count == 0:
+        default_pw = generate_password_hash('Travel@2026')
+        users = [
+            ('zhangmin', default_pw, '张敏', 'receptionist'),
+            ('lihua',    default_pw, '李华', 'collector'),
+            ('wanglei',  default_pw, '王磊', 'routeAdmin'),
+            ('zhaofang', default_pw, '赵芳', 'accountant'),
+            ('admin',    default_pw, '管理员', 'admin'),
+        ]
+        cur.executemany(
+            "INSERT INTO user (username, password_hash, real_name, role) VALUES (?,?,?,?)",
+            users
+        )
+        conn.commit()
+
+    # 检查业务数据是否已存在
     count = cur.execute("SELECT COUNT(*) FROM route").fetchone()[0]
     if count > 0:
         conn.close()
@@ -166,15 +195,15 @@ def seed_data():
 
     # 旅游团
     groups = [
-        ('YN-20260615', 'A-003', '2026-06-15', '2026-06-08', 30, 22, '已开放'),
-        ('YN-20260701', 'A-003', '2026-07-01', '2026-06-24', 25, 10, '已开放'),
-        ('YN-20260620', 'A-002', '2026-06-20', '2026-06-13', 20, 18, '已开放'),
-        ('YN-20260510', 'A-001', '2026-05-10', '2026-05-03', 30, 28, '已截止'),
-        ('BJ-20260701', 'A-004', '2026-07-01', '2026-06-24', 40, 15, '已开放'),
-        ('HN-20260720', 'A-006', '2026-07-20', '2026-07-13', 35, 8, '已开放'),
-        ('SC-20260801', 'A-007', '2026-08-01', '2026-07-25', 25, 5, '已开放'),
+        ('YN-20260615', 'A-003', '2026-06-15', '2026-06-08', '2026-06-12', 40, 22, '已开放'),
+        ('YN-20260701', 'A-003', '2026-07-01', '2026-06-24', '2026-06-28', 25, 10, '已开放'),
+        ('YN-20260620', 'A-002', '2026-06-20', '2026-06-13', '2026-06-17', 20, 18, '已开放'),
+        ('YN-20260510', 'A-001', '2026-05-10', '2026-05-03', '2026-05-07', 30, 28, '已截止'),
+        ('BJ-20260701', 'A-004', '2026-07-01', '2026-06-24', '2026-06-28', 40, 15, '已开放'),
+        ('HN-20260720', 'A-006', '2026-07-20', '2026-07-13', '2026-07-17', 35, 8, '已开放'),
+        ('SC-20260801', 'A-007', '2026-08-01', '2026-07-25', '2026-07-29', 25, 5, '已开放'),
     ]
-    cur.executemany("INSERT INTO tour_group VALUES (?,?,?,?,?,?,?)", groups)
+    cur.executemany("INSERT INTO tour_group VALUES (?,?,?,?,?,?,?,?)", groups)
 
     # 价格
     prices = [
@@ -187,7 +216,7 @@ def seed_data():
 
     # 申请
     applications = [
-        ('AP-20260501-001', 'YN-20260615', '2026-05-01', '张三', '13800138001', '420106199001011234', 3, 1, 2400, 12000, '进行中'),
+        ('AP-20260501-001', 'YN-20260615', '2026-05-01', '张三', '13800138001', '420106199001011234', 5, 1, 2400, 12000, '进行中'),
         ('AP-20260502-003', 'BJ-20260701', '2026-05-02', '李四', '13800138002', '420106199002021234', 2, 0, 1600, 8000, '进行中'),
         ('AP-20260428-005', 'HN-20260720', '2026-04-28', '王五', '13800138003', '420106199003031234', 4, 2, 3600, 18000, '已完成'),
         ('AP-20260430-002', 'SC-20260801', '2026-04-30', '赵六', '13800138004', '420106199004041234', 2, 1, 1800, 9000, '已完成'),

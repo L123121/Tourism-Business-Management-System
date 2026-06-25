@@ -1,0 +1,1 @@
+import{n as e}from"./index-COzsr9NZ.js";var t=(t,n)=>e.post(`/api/applications/${t}/participants`,n),n=(t,n)=>e.put(`/api/participants/${t}`,n),r=t=>e.post(`/api/participants/${t}/cancel`),i=(t,n)=>e.post(`/api/applications/${t}/change-responsible`,n);export{n as i,r as n,i as r,t};

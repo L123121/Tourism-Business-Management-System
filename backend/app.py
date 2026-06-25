@@ -1,10 +1,29 @@
-from flask import Flask, request, jsonify
+import os
+import uuid
+import time
+
+from flask import Flask, request, jsonify, g, send_from_directory
 from flask_cors import CORS
+from dotenv import load_dotenv
 from database import get_db, init_db, seed_data
+from auth import (
+    login_required, role_required, validate_password,
+    hash_password, check_password,
+    generate_token, ROLE_MENUS
+)
 from datetime import date, timedelta
 
-app = Flask(__name__)
-CORS(app)
+load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
+
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static')
+
+app = Flask(__name__, static_folder=STATIC_DIR, static_url_path='')
+app.config['MAX_CONTENT_LENGTH'] = 1 * 1024 * 1024  # 1MB 请求体上限
+
+cors_origins = os.environ.get('CORS_ORIGINS', '').split(',')
+CORS(app, origins=[o.strip() for o in cors_origins if o.strip()])
+
+
 
 
 # ==================== 工具函数 ====================
@@ -17,32 +36,16 @@ def rows_to_list(rows):
     return [dict(r) for r in rows]
 
 
-def gen_apply_no(db=None):
+def gen_apply_no():
     today = date.today().strftime('%Y%m%d')
-    own_db = db is None
-    if own_db:
-        db = get_db()
-    count = db.execute(
-        "SELECT COUNT(*) FROM application WHERE apply_no LIKE ?",
-        (f'AP-{today}-%',)
-    ).fetchone()[0]
-    if own_db:
-        db.close()
-    return f'AP-{today}-{count + 1:03d}'
+    short_id = uuid.uuid4().hex[:6].upper()
+    return f'AP-{today}-{short_id}'
 
 
-def gen_payment_no(db=None):
+def gen_payment_no():
     today = date.today().strftime('%Y%m%d')
-    own_db = db is None
-    if own_db:
-        db = get_db()
-    count = db.execute(
-        "SELECT COUNT(*) FROM payment WHERE payment_no LIKE ?",
-        (f'PAY-{today}-%',)
-    ).fetchone()[0]
-    if own_db:
-        db.close()
-    return f'PAY-{today}-{count + 1:03d}'
+    short_id = uuid.uuid4().hex[:6].upper()
+    return f'PAY-{today}-{short_id}'
 
 
 def get_paid_amount(db, apply_no):
@@ -50,6 +53,21 @@ def get_paid_amount(db, apply_no):
         "SELECT COALESCE(SUM(amount),0) as total FROM payment WHERE apply_no=? AND pay_type IN ('订金','余款')",
         (apply_no,)
     ).fetchone()['total']
+
+
+def sync_participant_counts(db, apply_no):
+    """根据实际参加者列表重算申请表中的 adult_count / child_count"""
+    counts = db.execute(
+        "SELECT type, COUNT(*) as cnt FROM participant WHERE apply_no=? AND status='已录入' GROUP BY type",
+        (apply_no,)
+    ).fetchall()
+    count_map = {r['type']: r['cnt'] for r in counts}
+    adult = count_map.get('大人', 0)
+    child = count_map.get('小孩', 0)
+    db.execute(
+        "UPDATE application SET adult_count=?, child_count=? WHERE apply_no=?",
+        (adult, child, apply_no)
+    )
 
 
 def calc_deposit(departure_date, adult, child):
@@ -83,9 +101,148 @@ def calc_cancel_fee(departure_date, paid_amount):
     return {'days': days, 'rate': rate, 'fee': round(fee, 2), 'refund': round(refund, 2)}
 
 
+# ==================== 登录与用户管理 ====================
+
+@app.route('/api/login', methods=['POST'])
+def login():
+    """用户登录，返回 JWT Token"""
+    data = request.json
+    if not data or not data.get('username') or not data.get('password'):
+        return jsonify({'error': '请输入用户名和密码'}), 400
+
+    db = get_db()
+    user = db.execute(
+        "SELECT * FROM user WHERE username=?", (data['username'],)
+    ).fetchone()
+    db.close()
+
+    if not user:
+        return jsonify({'error': '用户名或密码错误'}), 401
+    if not user['is_active']:
+        return jsonify({'error': '该账号已被禁用'}), 403
+    if not check_password(user['password_hash'], data['password']):
+        return jsonify({'error': '用户名或密码错误'}), 401
+
+    user_dict = dict(user)
+    token = generate_token(user_dict)
+
+    return jsonify({
+        'message': '登录成功',
+        'token': token,
+        'user': {
+            'id': user_dict['id'],
+            'username': user_dict['username'],
+            'real_name': user_dict['real_name'],
+            'role': user_dict['role'],
+            'menus': ROLE_MENUS.get(user_dict['role'], []),
+        }
+    })
+
+
+@app.route('/api/register', methods=['POST'])
+@login_required
+@role_required('admin')
+def register():
+    """注册新用户（仅管理员可用）"""
+    data = request.json
+    required = ['username', 'password', 'real_name', 'role']
+    for field in required:
+        if not data.get(field):
+            return jsonify({'error': f'缺少必填字段: {field}'}), 400
+
+    valid_roles = ['receptionist', 'collector', 'routeAdmin', 'accountant', 'admin']
+    if data['role'] not in valid_roles:
+        return jsonify({'error': f'无效角色，可选: {", ".join(valid_roles)}'}), 400
+
+    pw_error = validate_password(data['password'])
+    if pw_error:
+        return jsonify({'error': pw_error}), 400
+
+    if len(data['username']) < 3 or len(data['username']) > 20:
+        return jsonify({'error': '用户名长度需在3-20个字符之间'}), 400
+
+    db = get_db()
+    existing = db.execute("SELECT id FROM user WHERE username=?", (data['username'],)).fetchone()
+    if existing:
+        db.close()
+        return jsonify({'error': '用户名已存在'}), 400
+
+    try:
+        db.execute(
+            "INSERT INTO user (username, password_hash, real_name, role) VALUES (?,?,?,?)",
+            (data['username'], hash_password(data['password']),
+             data['real_name'], data['role'])
+        )
+        db.commit()
+        return jsonify({'message': '用户注册成功'}), 201
+    except Exception:
+        db.rollback()
+        return jsonify({'error': '注册失败，请稍后重试'}), 400
+    finally:
+        db.close()
+
+
+@app.route('/api/user/info', methods=['GET'])
+@login_required
+def get_user_info():
+    """获取当前登录用户信息"""
+    return jsonify({
+        'user': {
+            'user_id': g.user['user_id'],
+            'username': g.user['username'],
+            'real_name': g.user['real_name'],
+            'role': g.user['role'],
+            'menus': ROLE_MENUS.get(g.user['role'], []),
+        }
+    })
+
+
+@app.route('/api/user/password', methods=['PUT'])
+@login_required
+def change_password():
+    """修改密码"""
+    data = request.json
+    if not data.get('old_password') or not data.get('new_password'):
+        return jsonify({'error': '请输入原密码和新密码'}), 400
+
+    db = get_db()
+    user = db.execute("SELECT * FROM user WHERE id=?", (g.user['user_id'],)).fetchone()
+
+    if not check_password(user['password_hash'], data['old_password']):
+        db.close()
+        return jsonify({'error': '原密码错误'}), 400
+
+    pw_error = validate_password(data['new_password'])
+    if pw_error:
+        db.close()
+        return jsonify({'error': pw_error}), 400
+
+    db.execute(
+        "UPDATE user SET password_hash=? WHERE id=?",
+        (hash_password(data['new_password']), g.user['user_id'])
+    )
+    db.commit()
+    db.close()
+    return jsonify({'message': '密码修改成功'})
+
+
+@app.route('/api/users', methods=['GET'])
+@login_required
+@role_required('admin')
+def get_users():
+    """获取用户列表（仅管理员）"""
+    db = get_db()
+    rows = db.execute(
+        "SELECT id, username, real_name, role, is_active, created_date FROM user ORDER BY id"
+    ).fetchall()
+    db.close()
+    return jsonify(rows_to_list(rows))
+
+
 # ==================== 路线管理 ====================
 
 @app.route('/api/routes', methods=['GET'])
+@login_required
 def get_routes():
     db = get_db()
     rows = db.execute("SELECT * FROM route ORDER BY created_date DESC").fetchall()
@@ -94,6 +251,8 @@ def get_routes():
 
 
 @app.route('/api/routes', methods=['POST'])
+@login_required
+@role_required('routeAdmin')
 def create_route():
     data = request.json
     db = get_db()
@@ -108,14 +267,15 @@ def create_route():
         )
         db.commit()
         return jsonify({'message': '路线创建成功'}), 201
-    except Exception as e:
+    except Exception:
         db.rollback()
-        return jsonify({'error': str(e)}), 400
+        return jsonify({'error': '路线创建失败，请检查编号是否重复'}), 400
     finally:
         db.close()
 
 
 @app.route('/api/routes/<route_code>', methods=['GET'])
+@login_required
 def get_route(route_code):
     db = get_db()
     route = db.execute("SELECT * FROM route WHERE route_code=?", (route_code,)).fetchone()
@@ -139,6 +299,8 @@ def get_route(route_code):
 
 
 @app.route('/api/routes/<route_code>', methods=['PUT'])
+@login_required
+@role_required('routeAdmin')
 def update_route(route_code):
     data = request.json
     db = get_db()
@@ -163,6 +325,8 @@ def update_route(route_code):
 
 
 @app.route('/api/routes/<route_code>/cancel', methods=['POST'])
+@login_required
+@role_required('routeAdmin')
 def cancel_route(route_code):
     db = get_db()
     db.execute("UPDATE route SET status='已取消' WHERE route_code=?", (route_code,))
@@ -178,6 +342,7 @@ def cancel_route(route_code):
 # ==================== 旅游活动管理 ====================
 
 @app.route('/api/activities', methods=['GET'])
+@login_required
 def get_activities():
     route_code = request.args.get('route_code')
     db = get_db()
@@ -195,6 +360,8 @@ def get_activities():
 
 
 @app.route('/api/activities', methods=['POST'])
+@login_required
+@role_required('routeAdmin')
 def create_activity():
     data = request.json
     db = get_db()
@@ -206,14 +373,16 @@ def create_activity():
         )
         db.commit()
         return jsonify({'message': '旅游活动创建成功'}), 201
-    except Exception as e:
+    except Exception:
         db.rollback()
-        return jsonify({'error': str(e)}), 400
+        return jsonify({'error': '活动创建失败，请检查编号是否重复'}), 400
     finally:
         db.close()
 
 
 @app.route('/api/activities/<activity_code>', methods=['PUT'])
+@login_required
+@role_required('routeAdmin')
 def update_activity(activity_code):
     data = request.json
     db = get_db()
@@ -229,6 +398,7 @@ def update_activity(activity_code):
 # ==================== 旅游团管理 ====================
 
 @app.route('/api/groups', methods=['GET'])
+@login_required
 def get_groups():
     status = request.args.get('status')
     db = get_db()
@@ -248,25 +418,32 @@ def get_groups():
 
 
 @app.route('/api/groups', methods=['POST'])
+@login_required
+@role_required('routeAdmin')
 def create_group():
     data = request.json
     db = get_db()
     try:
+        # 计算余款截止日期（默认出发前3天）
+        departure = date.fromisoformat(data['departure_date'])
+        balance_deadline = data.get('balance_deadline') or (departure - timedelta(days=3)).isoformat()
+
         db.execute(
-            "INSERT INTO tour_group (group_code, activity_code, departure_date, deadline, capacity) VALUES (?,?,?,?,?)",
+            "INSERT INTO tour_group (group_code, activity_code, departure_date, deadline, balance_deadline, capacity) VALUES (?,?,?,?,?,?)",
             (data['group_code'], data['activity_code'],
-             data['departure_date'], data['deadline'], data['capacity'])
+             data['departure_date'], data['deadline'], balance_deadline, data['capacity'])
         )
         db.commit()
         return jsonify({'message': '旅游团创建成功'}), 201
-    except Exception as e:
+    except Exception:
         db.rollback()
-        return jsonify({'error': str(e)}), 400
+        return jsonify({'error': '旅游团创建失败，请检查编号是否重复'}), 400
     finally:
         db.close()
 
 
 @app.route('/api/groups/<group_code>', methods=['GET'])
+@login_required
 def get_group(group_code):
     db = get_db()
     row = db.execute(
@@ -286,6 +463,7 @@ def get_group(group_code):
 # ==================== 价格管理 ====================
 
 @app.route('/api/prices', methods=['GET'])
+@login_required
 def get_prices():
     db = get_db()
     rows = db.execute(
@@ -300,6 +478,7 @@ def get_prices():
 
 
 @app.route('/api/prices/<group_code>', methods=['GET'])
+@login_required
 def get_price(group_code):
     db = get_db()
     row = db.execute("SELECT * FROM price WHERE group_code=?", (group_code,)).fetchone()
@@ -310,6 +489,8 @@ def get_price(group_code):
 
 
 @app.route('/api/prices/<group_code>', methods=['PUT'])
+@login_required
+@role_required('routeAdmin')
 def update_price(group_code):
     data = request.json
     db = get_db()
@@ -334,6 +515,8 @@ def update_price(group_code):
 
 
 @app.route('/api/prices/<group_code>/publish', methods=['POST'])
+@login_required
+@role_required('routeAdmin')
 def publish_price(group_code):
     db = get_db()
     existing = db.execute("SELECT * FROM price WHERE group_code=?", (group_code,)).fetchone()
@@ -353,6 +536,8 @@ def publish_price(group_code):
 # ==================== 申请管理 ====================
 
 @app.route('/api/applications', methods=['GET'])
+@login_required
+@role_required('receptionist', 'collector', 'accountant')
 def get_applications():
     db = get_db()
     rows = db.execute(
@@ -368,6 +553,8 @@ def get_applications():
 
 
 @app.route('/api/applications/<apply_no>', methods=['GET'])
+@login_required
+@role_required('receptionist', 'collector')
 def get_application(apply_no):
     db = get_db()
     app_row = db.execute(
@@ -384,7 +571,7 @@ def get_application(apply_no):
         return jsonify({'error': '申请不存在'}), 404
 
     participants = db.execute(
-        "SELECT * FROM participant WHERE apply_no=? ORDER BY id", (apply_no,)
+        "SELECT * FROM participant WHERE apply_no=? AND status='已录入' ORDER BY id", (apply_no,)
     ).fetchall()
     payments = db.execute(
         "SELECT * FROM payment WHERE apply_no=? ORDER BY pay_date", (apply_no,)
@@ -398,6 +585,8 @@ def get_application(apply_no):
 
 
 @app.route('/api/applications', methods=['POST'])
+@login_required
+@role_required('receptionist')
 def create_application():
     data = request.json
     db = get_db()
@@ -418,7 +607,7 @@ def create_application():
     departure = date.fromisoformat(group['departure_date'])
     deposit_info = calc_deposit(departure, data['adult_count'], data['child_count'])
 
-    apply_no = gen_apply_no(db)
+    apply_no = gen_apply_no()
     try:
         db.execute(
             '''INSERT INTO application
@@ -444,7 +633,7 @@ def create_application():
             (data['adult_count'] + data['child_count'], data['group_code'])
         )
         # 记录订金支付
-        pay_no = gen_payment_no(db)
+        pay_no = gen_payment_no()
         db.execute(
             "INSERT INTO payment (payment_no, apply_no, amount, pay_type, pay_method) VALUES (?,?,?,?,?)",
             (pay_no, apply_no, deposit_info['total'], '订金', data.get('pay_method', '现金'))
@@ -463,6 +652,8 @@ def create_application():
 
 
 @app.route('/api/applications/<apply_no>/cancel', methods=['POST'])
+@login_required
+@role_required('receptionist')
 def cancel_application(apply_no):
     db = get_db()
     app_row = db.execute("SELECT * FROM application WHERE apply_no=?", (apply_no,)).fetchone()
@@ -472,6 +663,9 @@ def cancel_application(apply_no):
     if app_row['status'] == '已取消':
         db.close()
         return jsonify({'error': '申请已取消'}), 400
+    if app_row['status'] == '已完成':
+        db.close()
+        return jsonify({'error': '申请已完成，无法取消'}), 400
 
     group = db.execute("SELECT * FROM tour_group WHERE group_code=?", (app_row['group_code'],)).fetchone()
     departure = date.fromisoformat(group['departure_date'])
@@ -492,7 +686,7 @@ def cancel_application(apply_no):
         )
         # 记录退款
         if fee_info['refund'] > 0:
-            refund_no = gen_payment_no(db)
+            refund_no = gen_payment_no()
             db.execute(
                 "INSERT INTO payment (payment_no, apply_no, amount, pay_type, pay_method) VALUES (?,?,?,?,?)",
                 (refund_no, apply_no, -fee_info['refund'], '退款', '银行转账')
@@ -512,6 +706,8 @@ def cancel_application(apply_no):
 # ==================== 参加者管理 ====================
 
 @app.route('/api/applications/<apply_no>/participants', methods=['GET'])
+@login_required
+@role_required('receptionist', 'collector')
 def get_participants(apply_no):
     db = get_db()
     rows = db.execute(
@@ -523,9 +719,55 @@ def get_participants(apply_no):
 
 
 @app.route('/api/applications/<apply_no>/participants', methods=['POST'])
+@login_required
+@role_required('receptionist')
 def add_participant(apply_no):
     data = request.json
     db = get_db()
+
+    # 数据校验
+    if not data.get('name', '').strip():
+        db.close()
+        return jsonify({'error': '姓名不能为空'}), 400
+    if not data.get('gender') or data['gender'] not in ('男', '女'):
+        db.close()
+        return jsonify({'error': '性别必须为男或女'}), 400
+    if not isinstance(data.get('age'), int) or data['age'] < 1:
+        db.close()
+        return jsonify({'error': '年龄必须为正整数'}), 400
+    if data.get('type') not in ('大人', '小孩'):
+        db.close()
+        return jsonify({'error': '类型必须为大人或小孩'}), 400
+    idcard = data.get('idcard', '')
+    if idcard and (len(idcard) != 18 or not idcard.isdigit()):
+        db.close()
+        return jsonify({'error': '身份证号须为18位数字'}), 400
+    phone = data.get('phone', '')
+    if phone and (len(phone) != 11 or not phone.isdigit()):
+        db.close()
+        return jsonify({'error': '电话号码须为11位数字'}), 400
+
+    # 校验人数是否超出申请限额
+    app_row = db.execute("SELECT adult_count, child_count FROM application WHERE apply_no=?", (apply_no,)).fetchone()
+    if not app_row:
+        db.close()
+        return jsonify({'error': '申请不存在'}), 404
+
+    counts = db.execute(
+        "SELECT type, COUNT(*) as cnt FROM participant WHERE apply_no=? AND status='已录入' GROUP BY type",
+        (apply_no,)
+    ).fetchall()
+    count_map = {r['type']: r['cnt'] for r in counts}
+    current_adult = count_map.get('大人', 0)
+    current_child = count_map.get('小孩', 0)
+
+    if data['type'] == '大人' and current_adult >= app_row['adult_count']:
+        db.close()
+        return jsonify({'error': f'大人人数已达上限（{app_row["adult_count"]}人），无法继续添加'}), 400
+    if data['type'] == '小孩' and current_child >= app_row['child_count']:
+        db.close()
+        return jsonify({'error': f'小孩人数已达上限（{app_row["child_count"]}人），无法继续添加'}), 400
+
     try:
         db.execute(
             '''INSERT INTO participant (apply_no, name, gender, age, idcard, type, phone)
@@ -535,17 +777,42 @@ def add_participant(apply_no):
         )
         db.commit()
         return jsonify({'message': '参加者添加成功'}), 201
-    except Exception as e:
+    except Exception:
         db.rollback()
-        return jsonify({'error': str(e)}), 400
+        return jsonify({'error': '参加者添加失败'}), 400
     finally:
         db.close()
 
 
 @app.route('/api/participants/<int:pid>', methods=['PUT'])
+@login_required
+@role_required('receptionist')
 def update_participant(pid):
     data = request.json
     db = get_db()
+
+    # 数据校验
+    if not data.get('name', '').strip():
+        db.close()
+        return jsonify({'error': '姓名不能为空'}), 400
+    if not data.get('gender') or data['gender'] not in ('男', '女'):
+        db.close()
+        return jsonify({'error': '性别必须为男或女'}), 400
+    if not isinstance(data.get('age'), int) or data['age'] < 1:
+        db.close()
+        return jsonify({'error': '年龄必须为正整数'}), 400
+    if data.get('type') not in ('大人', '小孩'):
+        db.close()
+        return jsonify({'error': '类型必须为大人或小孩'}), 400
+    idcard = data.get('idcard', '')
+    if idcard and (len(idcard) != 18 or not idcard.isdigit()):
+        db.close()
+        return jsonify({'error': '身份证号须为18位数字'}), 400
+    phone = data.get('phone', '')
+    if phone and (len(phone) != 11 or not phone.isdigit()):
+        db.close()
+        return jsonify({'error': '电话号码须为11位数字'}), 400
+
     db.execute(
         "UPDATE participant SET name=?, gender=?, age=?, idcard=?, type=?, phone=? WHERE id=?",
         (data['name'], data['gender'], data['age'],
@@ -557,6 +824,8 @@ def update_participant(pid):
 
 
 @app.route('/api/participants/<int:pid>/cancel', methods=['POST'])
+@login_required
+@role_required('receptionist')
 def cancel_participant(pid):
     db = get_db()
     p = db.execute("SELECT * FROM participant WHERE id=?", (pid,)).fetchone()
@@ -575,6 +844,8 @@ def cancel_participant(pid):
 
 
 @app.route('/api/applications/<apply_no>/change-responsible', methods=['POST'])
+@login_required
+@role_required('receptionist')
 def change_responsible(apply_no):
     data = request.json
     new_resp_id = data['new_responsible_id']
@@ -604,6 +875,8 @@ def change_responsible(apply_no):
 # ==================== 余款支付 ====================
 
 @app.route('/api/balance/pending', methods=['GET'])
+@login_required
+@role_required('collector')
 def get_pending_balance():
     db = get_db()
     rows = db.execute(
@@ -624,6 +897,8 @@ def get_pending_balance():
 
 
 @app.route('/api/applications/<apply_no>/pay-balance', methods=['POST'])
+@login_required
+@role_required('collector')
 def pay_balance(apply_no):
     data = request.json
     db = get_db()
@@ -632,6 +907,10 @@ def pay_balance(apply_no):
     if not app_row:
         db.close()
         return jsonify({'error': '申请不存在'}), 404
+
+    if app_row['status'] != '进行中':
+        db.close()
+        return jsonify({'error': '该申请已完结，无法支付余款'}), 400
 
     paid = get_paid_amount(db, apply_no)
 
@@ -643,7 +922,7 @@ def pay_balance(apply_no):
         return jsonify({'error': f'支付金额超出待付余额 ¥{remaining}'}), 400
 
     try:
-        pay_no = gen_payment_no(db)
+        pay_no = gen_payment_no()
         db.execute(
             "INSERT INTO payment (payment_no, apply_no, amount, pay_type, pay_method) VALUES (?,?,?,?,?)",
             (pay_no, apply_no, amount, '余款', data.get('pay_method', '现金'))
@@ -668,6 +947,8 @@ def pay_balance(apply_no):
 # ==================== 计算订金（供前端调用） ====================
 
 @app.route('/api/calc-deposit', methods=['POST'])
+@login_required
+@role_required('receptionist')
 def api_calc_deposit():
     data = request.json
     departure = date.fromisoformat(data['departure_date'])
@@ -675,7 +956,106 @@ def api_calc_deposit():
     return jsonify(result)
 
 
+# ==================== 余款截止检查 ====================
+
+def auto_cancel_overdue():
+    """启动时自动取消余款逾期且未付清的申请（仅限未出发的）"""
+    db = get_db()
+    today = date.today().isoformat()
+
+    rows = db.execute(
+        '''SELECT ap.*, g.balance_deadline, g.departure_date
+           FROM application ap
+           JOIN tour_group g ON ap.group_code=g.group_code
+           WHERE ap.status='进行中'
+           AND g.balance_deadline IS NOT NULL
+           AND g.balance_deadline < ?
+           AND g.departure_date >= ?''',
+        (today, today)
+    ).fetchall()
+
+    cancelled = []
+    for row in rows:
+        apply_no = row['apply_no']
+        paid = get_paid_amount(db, apply_no)
+        if paid < row['total_fee']:
+            departure = date.fromisoformat(row['departure_date'])
+            fee_info = calc_cancel_fee(departure, paid)
+
+            try:
+                db.execute("UPDATE application SET status='已取消' WHERE apply_no=?", (apply_no,))
+                db.execute("UPDATE participant SET status='已取消' WHERE apply_no=?", (apply_no,))
+                db.execute(
+                    "UPDATE tour_group SET current_count=current_count-? WHERE group_code=?",
+                    (row['adult_count'] + row['child_count'], row['group_code'])
+                )
+                if fee_info['refund'] > 0:
+                    refund_no = gen_payment_no()
+                    db.execute(
+                        "INSERT INTO payment (payment_no, apply_no, amount, pay_type, pay_method) VALUES (?,?,?,?,?)",
+                        (refund_no, apply_no, -fee_info['refund'], '退款', '银行转账')
+                    )
+                cancelled.append({
+                    'apply_no': apply_no,
+                    'responsible_name': row['responsible_name'],
+                    'fee_info': fee_info
+                })
+            except Exception:
+                continue
+
+    db.commit()
+    db.close()
+
+    if cancelled:
+        print(f"[auto_cancel] cancelled {len(cancelled)} overdue application(s)")
+        for c in cancelled:
+            print(f"  - {c['apply_no']} refund={c['fee_info']['refund']}")
+
+    return cancelled
+
+
+@app.route('/api/check-balance-deadline', methods=['POST'])
+@login_required
+@role_required('admin', 'collector')
+def check_balance_deadline_api():
+    """API 接口：手动触发余款逾期检查"""
+    cancelled = auto_cancel_overdue()
+    return jsonify({
+        'message': f'已自动取消 {len(cancelled)} 个逾期申请',
+        'cancelled': cancelled
+    })
+
+
+@app.route('/api/pending-balance', methods=['GET'])
+@login_required
+@role_required('collector', 'admin')
+def get_pending_balance_list():
+    """获取即将到期的未付清申请列表"""
+    db = get_db()
+    today = date.today().isoformat()
+
+    rows = db.execute(
+        '''SELECT ap.*, g.balance_deadline, g.departure_date, r.route_name,
+                  COALESCE(SUM(CASE WHEN p.pay_type IN ('订金','余款') THEN p.amount ELSE 0 END), 0) as paid_total
+           FROM application ap
+           JOIN tour_group g ON ap.group_code=g.group_code
+           JOIN activity a ON g.activity_code=a.activity_code
+           JOIN route r ON a.route_code=r.route_code
+           LEFT JOIN payment p ON ap.apply_no=p.apply_no
+           WHERE ap.status='进行中'
+           AND g.balance_deadline IS NOT NULL
+           GROUP BY ap.apply_no
+           HAVING paid_total < ap.total_fee
+           ORDER BY g.balance_deadline''',
+    ).fetchall()
+
+    db.close()
+    return jsonify(rows_to_list(rows))
+
+
 @app.route('/api/calc-cancel-fee', methods=['POST'])
+@login_required
+@role_required('receptionist')
 def api_calc_cancel_fee():
     data = request.json
     departure = date.fromisoformat(data['departure_date'])
@@ -686,6 +1066,8 @@ def api_calc_cancel_fee():
 # ==================== 财务数据导出 ====================
 
 @app.route('/api/finance/export', methods=['GET'])
+@login_required
+@role_required('accountant')
 def get_finance_export():
     start = request.args.get('start')
     end = request.args.get('end')
@@ -717,9 +1099,23 @@ def get_finance_export():
 
 
 @app.route('/api/finance/export', methods=['POST'])
+@login_required
+@role_required('accountant')
 def export_finance():
+    data = request.json or {}
     db = get_db()
-    db.execute("UPDATE payment SET exported=1 WHERE exported=0")
+    sql = "UPDATE payment SET exported=1 WHERE exported=0"
+    params = []
+    if data.get('start'):
+        sql += ' AND pay_date>=?'
+        params.append(data['start'])
+    if data.get('end'):
+        sql += ' AND pay_date<=?'
+        params.append(data['end'])
+    if data.get('type'):
+        sql += ' AND pay_type=?'
+        params.append(data['type'])
+    db.execute(sql, params)
     count = db.execute("SELECT changes()").fetchone()[0]
     db.commit()
     db.close()
@@ -729,6 +1125,7 @@ def export_finance():
 # ==================== 统计数据 ====================
 
 @app.route('/api/stats', methods=['GET'])
+@login_required
 def get_stats():
     db = get_db()
     today = date.today().isoformat()
@@ -761,11 +1158,24 @@ def get_stats():
     })
 
 
+# ==================== 前端页面 ====================
+
+@app.route('/')
+@app.route('/<path:path>')
+def serve_frontend(path=''):
+    """Vue 前端入口：静态文件直接返回，其余返回 index.html"""
+    if path and os.path.exists(os.path.join(STATIC_DIR, path)):
+        return send_from_directory(STATIC_DIR, path)
+    return send_from_directory(STATIC_DIR, 'index.html')
+
+
 # ==================== 启动 ====================
 
 if __name__ == '__main__':
     init_db()
     seed_data()
-    print("旅游业务管理系统后端已启动")
-    print("API 地址: http://localhost:5000")
-    app.run(debug=True, port=5000)
+    auto_cancel_overdue()
+    debug_mode = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true'
+    print("旅游业务管理系统已启动")
+    print("访问地址: http://localhost:5000")
+    app.run(debug=debug_mode, port=5000)

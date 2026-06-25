@@ -1,0 +1,1 @@
+import{n as e}from"./index-COzsr9NZ.js";var t=()=>e.get(`/api/applications`),n=t=>e.get(`/api/applications/${t}`),r=t=>e.post(`/api/applications`,t),i=(t,n)=>e.post(`/api/applications/${t}/cancel`,n),a=t=>e.post(`/api/calc-deposit`,t);export{t as a,n as i,i as n,r,a as t};

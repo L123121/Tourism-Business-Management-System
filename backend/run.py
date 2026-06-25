@@ -18,6 +18,10 @@ from database import init_db, seed_data
 init_db()
 seed_data()
 
+print("正在检查逾期申请...")
+from app import auto_cancel_overdue
+auto_cancel_overdue()
+
 print("正在启动 Flask 服务...")
 from app import app
 app.run(debug=True, port=5000)

@@ -11,7 +11,31 @@
       "Bash(pip install *)",
       "Skill(pdf)",
       "Bash(dir *.pdf)",
-      "Bash(Remove-Item *)"
+      "Bash(Remove-Item *)",
+      "Bash(where java *)",
+      "Bash(where plantuml *)",
+      "Bash(pip show *)",
+      "Bash(curl -s \"http://www.plantuml.com/plantuml/png/SoWkIImgAStDuNBAJrBGjLDmpCbCJbMmKiX8pSd9vt98pKi1IW80\" -o test.png)",
+      "Bash(java *)",
+      "Bash(curl -s \"https://www.plantuml.com/plantuml/png/SoWkIImgAStDuNBAJrBGjLDmpCbCJbMmKiX8pSd9vt98pKi1IW80\" -o test2.png)",
+      "Bash(Get-ChildItem *)",
+      "Bash(Select-Object FullName, Length, LastWriteTime)",
+      "PowerShell(pip install *)",
+      "Read(//c/Users/李萍/Desktop/学校资料//**)",
+      "Read(//mnt/c/Users/李萍/Desktop/**)",
+      "Bash(powershell -Command \"Get-ChildItem 'C:\\\\Users\\\\李萍\\\\Desktop\\\\学校资料\\\\' -Force 2>&1\")",
+      "PowerShell(python -c \"import olefile; print\\('olefile ok'\\)\" 2>&1; python -c \"from docx import Document; print\\('python-docx ok'\\)\" 2>&1)",
+      "PowerShell(Get-Command *)",
+      "Bash(curl -s http://localhost:5000/api/login -X POST -H \"Content-Type: application/json\" -d '{\"username\":\"admin\",\"password\":\"123456\"}')",
+      "Bash(npm create *)",
+      "Bash(npm install *)",
+      "Bash(npx vite *)",
+      "Bash(pkill -f \"python.*run.py\")",
+      "Bash(pkill -f \"flask\")",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:5000/)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:5000/api/login -X POST -H \"Content-Type: application/json\" -d '{\"username\":\"admin\",\"password\":\"123456\"}')",
+      "Bash(pkill -f \"vite\")",
+      "Bash(npm run *)"
     ]
   }
 }

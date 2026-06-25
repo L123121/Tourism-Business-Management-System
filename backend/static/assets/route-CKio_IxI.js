@@ -1,0 +1,1 @@
+import{n as e}from"./index-COzsr9NZ.js";var t=()=>e.get(`/api/routes`),n=t=>e.get(`/api/routes/${t}`),r=t=>e.post(`/api/routes`,t),i=(t,n)=>e.put(`/api/routes/${t}`,n),a=(t,n)=>e.post(`/api/routes/${t}/cancel`,n);export{i as a,t as i,r as n,n as r,a as t};

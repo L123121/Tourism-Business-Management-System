@@ -1,0 +1,1 @@
+import{n as e}from"./index-COzsr9NZ.js";var t=t=>e.get(`/api/finance/export`,{params:t}),n=t=>e.post(`/api/finance/export`,t),r=()=>e.get(`/api/stats`);export{t as n,r,n as t};
